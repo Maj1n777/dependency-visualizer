@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config>
-    <package_name>my-package</package_name>
-    <repository_url>https://pypi.org/simple/</repository_url>
+    <package_name>nginx</package_name>
+    <repository_url>https://dl-cdn.alpinelinux.org/alpine/v3.18/main</repository_url>
     <test_repository_mode>false</test_repository_mode>
-    <output_filename>my_graph.png</output_filename>
+    <output_filename>dependencies.png</output_filename>
     <ascii_tree_mode>true</ascii_tree_mode>
     <filter_substring></filter_substring>
+    <architecture>x86_64</architecture>
 </config>
