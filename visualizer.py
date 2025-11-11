@@ -1,26 +1,24 @@
-#!/usr/bin/env python3
-"""
-Визуализатор графа зависимостей пакетов - Этап 2
-Основное приложение с выводом прямых зависимостей
-"""
-
 import xml.etree.ElementTree as ET
 import sys
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Callable, List
 import urllib.request
 import urllib.error
 import gzip
 import re
+from graph_builder import (
+    DependencyGraphBuilder,
+    TestRepositoryParser,
+    CircularDependencyError,
+    GraphBuilderError
+)
 
 
 class ConfigError(Exception):
-    """Исключение для ошибок конфигурации"""
     pass
 
 
 class APKParserError(Exception):
-    """Исключение для ошибок парсинга APK"""
     pass
 
 
@@ -28,26 +26,22 @@ class AlpineDependencyParser:
     def __init__(self, repository_url: str, architecture: str = "x86_64"):
         self.repository_url = repository_url.rstrip('/')
         self.architecture = architecture
+        self.packages_cache = None
 
-    def get_package_dependencies(self, package_name: str) -> list:
-        """
-        Получение прямых зависимостей для указанного пакета из Alpine репозитория
-        """
+    def _load_packages_index(self) -> Dict[str, Dict]:
+        if self.packages_cache is not None:
+            return self.packages_cache
+
         try:
-            print(f"Поиск пакета '{package_name}' в репозитории...")
-
-            # Загрузка индекса пакетов
             index_url = f"{self.repository_url}/{self.architecture}/APKINDEX.tar.gz"
 
             with urllib.request.urlopen(index_url) as response:
                 if response.status != 200:
-                    raise APKParserError(f"Ошибка загрузки индекса: HTTP {response.status}")
+                    raise APKParserError(f"Index download error: HTTP {response.status}")
 
-                # Распаковка и чтение gzip архива
                 with gzip.open(response, 'rt', encoding='utf-8', errors='ignore') as f:
                     index_content = f.read()
 
-            # Парсинг индекса и поиск пакета
             packages = {}
             current_package = {}
 
@@ -65,7 +59,6 @@ class AlpineDependencyParser:
                     if dependencies:
                         clean_deps = []
                         for dep in dependencies.split():
-                            # Удаляем условия версий и логические операторы
                             clean_dep = re.sub(r'[<=>!|~].*$', '', dep)
                             if clean_dep:
                                 clean_deps.append(clean_dep)
@@ -73,30 +66,31 @@ class AlpineDependencyParser:
                     else:
                         current_package['dependencies'] = []
 
-            # Добавляем последний пакет
             if current_package and 'name' in current_package:
                 packages[current_package['name']] = current_package
 
-            # Поиск запрошенного пакета
-            if package_name not in packages:
-                available_packages = [pkg for pkg in packages.keys() if package_name.lower() in pkg.lower()]
-                if available_packages:
-                    raise APKParserError(
-                        f"Пакет '{package_name}' не найден. Возможно вы имели в виду: {', '.join(available_packages[:5])}"
-                    )
-                else:
-                    raise APKParserError(f"Пакет '{package_name}' не найден в репозитории")
-
-            package_info = packages[package_name]
-            dependencies = package_info.get('dependencies', [])
-
-            print(f"Пакет '{package_name}' найден (версия: {package_info.get('version', 'неизвестна')})")
-            return dependencies
+            self.packages_cache = packages
+            return packages
 
         except urllib.error.URLError as e:
-            raise APKParserError(f"Ошибка сети: {e}")
+            raise APKParserError(f"Network error: {e}")
         except Exception as e:
-            raise APKParserError(f"Ошибка получения зависимостей: {e}")
+            raise APKParserError(f"Index loading error: {e}")
+
+    def get_package_dependencies(self, package_name: str) -> list:
+        packages = self._load_packages_index()
+
+        if package_name not in packages:
+            available_packages = [pkg for pkg in packages.keys() if package_name.lower() in pkg.lower()]
+            if available_packages:
+                raise APKParserError(
+                    f"Package '{package_name}' not found. Similar packages: {', '.join(available_packages[:5])}"
+                )
+            else:
+                raise APKParserError(f"Package '{package_name}' not found in repository")
+
+        package_info = packages[package_name]
+        return package_info.get('dependencies', [])
 
 
 class DependencyVisualizer:
@@ -104,42 +98,37 @@ class DependencyVisualizer:
         self.config: Dict[str, Any] = {}
 
     def load_config(self, config_path: str = 'config.xml') -> None:
-        """
-        Загрузка конфигурации из XML файла
-        """
         try:
             if not os.path.exists(config_path):
-                raise ConfigError(f"Конфигурационный файл '{config_path}' не найден")
+                raise ConfigError(f"Config file '{config_path}' not found")
 
             tree = ET.parse(config_path)
             root = tree.getroot()
 
-            # Парсинг всех параметров конфигурации
             config_params = {}
 
-            # Обязательные параметры
             required_params = ['package_name', 'repository_url', 'test_repository_mode',
                                'output_filename', 'ascii_tree_mode']
 
             for param in required_params:
                 element = root.find(param)
                 if element is None or not element.text:
-                    raise ConfigError(f"Параметр '{param}' обязателен в конфигурации")
+                    raise ConfigError(f"Parameter '{param}' is required")
 
                 value = element.text.strip()
 
-                # Обработка булевых значений
                 if param in ['test_repository_mode', 'ascii_tree_mode']:
                     if value.lower() not in ['true', 'false']:
-                        raise ConfigError(f"Параметр '{param}' должен быть 'true' или 'false'")
+                        raise ConfigError(f"Parameter '{param}' must be 'true' or 'false'")
                     config_params[param] = value.lower() == 'true'
                 else:
                     config_params[param] = value
 
-            # Необязательные параметры
             optional_params = {
                 'filter_substring': '',
-                'architecture': 'x86_64'
+                'architecture': 'x86_64',
+                'test_repository_path': 'test_repository.txt',
+                'max_depth': '10'
             }
 
             for param, default_value in optional_params.items():
@@ -149,107 +138,110 @@ class DependencyVisualizer:
                 else:
                     config_params[param] = default_value
 
+            try:
+                config_params['max_depth'] = int(config_params['max_depth'])
+            except ValueError:
+                raise ConfigError("Parameter 'max_depth' must be a number")
+
             self.config = config_params
 
         except ET.ParseError as e:
-            raise ConfigError(f"Ошибка парсинга XML: {e}")
+            raise ConfigError(f"XML parsing error: {e}")
         except Exception as e:
-            raise ConfigError(f"Ошибка загрузки конфигурации: {e}")
+            raise ConfigError(f"Config loading error: {e}")
 
     def print_config(self) -> None:
-        """
-        Вывод всех параметров конфигурации в формате ключ-значение
-        """
-        print("=== Параметры конфигурации ===")
+        print("=== Configuration Parameters ===")
         for key, value in self.config.items():
             print(f"{key}: {value}")
-        print("==============================")
+        print("================================")
 
-    def get_real_dependencies(self) -> list:
-        """
-        Получение реальных зависимостей из Alpine репозитория
-        """
-        try:
+    def get_dependencies_function(self) -> Callable[[str], list]:
+        if self.config['test_repository_mode']:
+            test_repo = TestRepositoryParser.parse_test_repository(
+                self.config['test_repository_path']
+            )
+
+            def get_test_dependencies(package: str) -> list:
+                return test_repo.get(package, [])
+
+            return get_test_dependencies
+        else:
             parser = AlpineDependencyParser(
                 repository_url=self.config['repository_url'],
                 architecture=self.config['architecture']
             )
 
-            dependencies = parser.get_package_dependencies(self.config['package_name'])
+            def get_real_dependencies(package: str) -> list:
+                return parser.get_package_dependencies(package)
 
-            # Применение фильтра если указан
-            if self.config['filter_substring']:
-                filtered_deps = [dep for dep in dependencies if self.config['filter_substring'] in dep]
-                print(f"Применен фильтр: '{self.config['filter_substring']}'")
-                print(f"Зависимостей до фильтрации: {len(dependencies)}, после: {len(filtered_deps)}")
-                return filtered_deps
+            return get_real_dependencies
 
-            return dependencies
+    def build_dependency_graph(self) -> Dict[str, List[str]]:
+        try:
+            get_dependencies_func = self.get_dependencies_function()
 
-        except APKParserError as e:
-            raise ConfigError(f"Ошибка получения зависимостей: {e}")
+            builder = DependencyGraphBuilder(
+                filter_substring=self.config['filter_substring'],
+                max_depth=self.config['max_depth']
+            )
 
-    def print_dependencies(self, dependencies: list) -> None:
-        """
-        Вывод прямых зависимостей на экран (требование этапа 2)
-        """
-        print(f"\n ПРЯМЫЕ ЗАВИСИМОСТИ ПАКЕТА '{self.config['package_name']}':")
-        print("=" * 60)
+            print(f"BUILDING DEPENDENCY GRAPH...")
+            print(f"   Start package: {self.config['package_name']}")
+            print(f"   Mode: {'TEST' if self.config['test_repository_mode'] else 'REAL'}")
 
-        if dependencies:
-            for i, dep in enumerate(dependencies, 1):
-                print(f"{i:2d}. {dep}")
-        else:
-            print("Пакет не имеет прямых зависимостей")
+            graph = builder.bfs_build_graph(
+                self.config['package_name'],
+                get_dependencies_func
+            )
 
-        print(f"\n Итого: {len(dependencies)} зависимостей")
-        print("=" * 60)
+            if graph:
+                builder.print_graph_statistics(graph)
+
+                if self.config['ascii_tree_mode']:
+                    builder.print_graph_structure(graph, self.config['package_name'])
+            else:
+                print("Graph is empty")
+
+            return graph
+
+        except CircularDependencyError as e:
+            print(f"CIRCULAR DEPENDENCY DETECTED!")
+            print(f"   {e}")
+            return {}
+        except GraphBuilderError as e:
+            raise ConfigError(f"Graph building error: {e}")
 
     def run(self) -> None:
-        """
-        Основной метод запуска приложения
-        """
         try:
-            # Загрузка конфигурации
             config_path = sys.argv[1] if len(sys.argv) > 1 else 'config.xml'
-            print("Запуск Dependency Visualizer - Этап 2")
-            print("=========================================")
+            print("Dependency Visualizer - Stage 3")
+            print("===============================")
 
             self.load_config(config_path)
-
-            # Вывод параметров конфигурации
             self.print_config()
 
-            # Получение реальных зависимостей
-            print(f"\n Получение зависимостей для пакета '{self.config['package_name']}'...")
-            dependencies = self.get_real_dependencies()
+            graph = self.build_dependency_graph()
 
-            # Вывод прямых зависимостей (требование этапа 2)
-            self.print_dependencies(dependencies)
-
-            print(f"\n Этап 2 завершен успешно!")
-            print(f"Проанализирован пакет: {self.config['package_name']}")
-            print(f"Репозиторий: {self.config['repository_url']}")
-            print(f"Архитектура: {self.config['architecture']}")
+            print(f"Stage 3 completed successfully!")
+            print(f"Package analyzed: {self.config['package_name']}")
+            print(f"Graph size: {len(graph)} packages")
 
         except ConfigError as e:
-            print(f"Ошибка конфигурации: {e}")
+            print(f"Configuration error: {e}")
             sys.exit(1)
         except KeyboardInterrupt:
-            print("\n Программа прервана пользователем")
+            print("Program interrupted by user")
             sys.exit(1)
         except Exception as e:
-            print(f"Неожиданная ошибка: {e}")
+            print(f"Unexpected error: {e}")
             sys.exit(1)
 
 
 def main():
-    """
-    Точка входа в приложение
-    """
     if len(sys.argv) > 2:
-        print("Использование: python visualizer.py [config.xml]")
-        print("  config.xml - путь к конфигурационному файлу (по умолчанию: config.xml)")
+        print("Usage: python visualizer.py [config.xml]")
+        print("  config.xml - path to config file (default: config.xml)")
         sys.exit(1)
 
     visualizer = DependencyVisualizer()
