@@ -12,6 +12,7 @@ from graph_builder import (
     CircularDependencyError,
     GraphBuilderError
 )
+from dependency_analyzer import DependencyAnalyzer
 
 
 class ConfigError(Exception):
@@ -34,14 +35,18 @@ class AlpineDependencyParser:
 
         try:
             index_url = f"{self.repository_url}/{self.architecture}/APKINDEX.tar.gz"
+            print(f"Downloading package index from: {index_url}")
 
-            with urllib.request.urlopen(index_url) as response:
+            # Добавляем таймаут и обработку ошибок
+            with urllib.request.urlopen(index_url, timeout=30) as response:
                 if response.status != 200:
                     raise APKParserError(f"Index download error: HTTP {response.status}")
 
+                print("Unpacking index...")
                 with gzip.open(response, 'rt', encoding='utf-8', errors='ignore') as f:
                     index_content = f.read()
 
+            print("Parsing package index...")
             packages = {}
             current_package = {}
 
@@ -69,6 +74,7 @@ class AlpineDependencyParser:
             if current_package and 'name' in current_package:
                 packages[current_package['name']] = current_package
 
+            print(f"Index loaded: {len(packages)} packages")
             self.packages_cache = packages
             return packages
 
@@ -128,7 +134,8 @@ class DependencyVisualizer:
                 'filter_substring': '',
                 'architecture': 'x86_64',
                 'test_repository_path': 'test_repository.txt',
-                'max_depth': '10'
+                'max_depth': '10',
+                'show_load_order': 'false'
             }
 
             for param, default_value in optional_params.items():
@@ -177,6 +184,39 @@ class DependencyVisualizer:
 
             return get_real_dependencies
 
+    def analyze_load_order(self, graph: Dict[str, List[str]]) -> None:
+        if not graph:
+            print("Cannot analyze load order - graph is empty")
+            return
+
+        print("\n" + "=" * 60)
+        print("DEPENDENCY LOAD ORDER ANALYSIS")
+        print("=" * 60)
+
+        analyzer = DependencyAnalyzer()
+
+        bfs_order, dfs_order, topological_order = analyzer.compare_load_orders(
+            graph, self.config['package_name']
+        )
+
+        analyzer.print_detailed_dependency_analysis(graph, self.config['package_name'])
+
+        print(f"\nRECOMMENDED LOAD ORDER FOR '{self.config['package_name']}':")
+        print("-" * 40)
+        for i, package in enumerate(bfs_order, 1):
+            print(f"{i:2d}. {package}")
+
+        print(f"\nEXPLANATION OF DIFFERENCES:")
+        print("-" * 40)
+        print("1. BFS order: Processes packages level by level")
+        print("2. DFS order: Processes dependencies first, then package")
+        print("3. Topological order: Strict dependency-based ordering")
+        print("4. Real package managers use complex algorithms with:")
+        print("   - Conflict resolution")
+        print("   - Version constraints")
+        print("   - Repository priorities")
+        print("   - Installation optimization")
+
     def build_dependency_graph(self) -> Dict[str, List[str]]:
         try:
             get_dependencies_func = self.get_dependencies_function()
@@ -200,6 +240,9 @@ class DependencyVisualizer:
 
                 if self.config['ascii_tree_mode']:
                     builder.print_graph_structure(graph, self.config['package_name'])
+
+                if self.config['show_load_order']:
+                    self.analyze_load_order(graph)
             else:
                 print("Graph is empty")
 
@@ -215,7 +258,7 @@ class DependencyVisualizer:
     def run(self) -> None:
         try:
             config_path = sys.argv[1] if len(sys.argv) > 1 else 'config.xml'
-            print("Dependency Visualizer - Stage 3")
+            print("Dependency Visualizer - Stage 4")
             print("===============================")
 
             self.load_config(config_path)
@@ -223,7 +266,7 @@ class DependencyVisualizer:
 
             graph = self.build_dependency_graph()
 
-            print(f"Stage 3 completed successfully!")
+            print(f"Stage 4 completed successfully!")
             print(f"Package analyzed: {self.config['package_name']}")
             print(f"Graph size: {len(graph)} packages")
 

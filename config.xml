@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config>
-    <package_name>nginx</package_name>
+    <package_name>A</package_name>
     <repository_url>https://dl-cdn.alpinelinux.org/alpine/v3.18/main</repository_url>
-    <test_repository_mode>false</test_repository_mode>
+    <test_repository_mode>true</test_repository_mode>
     <test_repository_path>test_repository.txt</test_repository_path>
     <output_filename>dependencies.png</output_filename>
     <ascii_tree_mode>true</ascii_tree_mode>
     <filter_substring></filter_substring>
     <architecture>x86_64</architecture>
     <max_depth>10</max_depth>
+    <show_load_order>true</show_load_order>
 </config>
