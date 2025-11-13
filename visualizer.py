@@ -6,6 +6,7 @@ import urllib.request
 import urllib.error
 import gzip
 import re
+import socket
 from graph_builder import (
     DependencyGraphBuilder,
     TestRepositoryParser,
@@ -13,6 +14,7 @@ from graph_builder import (
     GraphBuilderError
 )
 from dependency_analyzer import DependencyAnalyzer
+from graph_visualizer import GraphVisualizer
 
 
 class ConfigError(Exception):
@@ -35,18 +37,14 @@ class AlpineDependencyParser:
 
         try:
             index_url = f"{self.repository_url}/{self.architecture}/APKINDEX.tar.gz"
-            print(f"Downloading package index from: {index_url}")
 
-            # Добавляем таймаут и обработку ошибок
-            with urllib.request.urlopen(index_url, timeout=30) as response:
+            with urllib.request.urlopen(index_url) as response:
                 if response.status != 200:
                     raise APKParserError(f"Index download error: HTTP {response.status}")
 
-                print("Unpacking index...")
                 with gzip.open(response, 'rt', encoding='utf-8', errors='ignore') as f:
                     index_content = f.read()
 
-            print("Parsing package index...")
             packages = {}
             current_package = {}
 
@@ -74,7 +72,6 @@ class AlpineDependencyParser:
             if current_package and 'name' in current_package:
                 packages[current_package['name']] = current_package
 
-            print(f"Index loaded: {len(packages)} packages")
             self.packages_cache = packages
             return packages
 
@@ -135,7 +132,9 @@ class DependencyVisualizer:
                 'architecture': 'x86_64',
                 'test_repository_path': 'test_repository.txt',
                 'max_depth': '10',
-                'show_load_order': 'false'
+                'show_load_order': 'false',
+                'generate_plantuml': 'false',
+                'plantuml_output': 'dependencies.puml'
             }
 
             for param, default_value in optional_params.items():
@@ -217,6 +216,30 @@ class DependencyVisualizer:
         print("   - Repository priorities")
         print("   - Installation optimization")
 
+    def visualize_graph(self, graph: Dict[str, List[str]]) -> None:
+        if not graph:
+            print("Cannot visualize - graph is empty")
+            return
+
+        visualizer = GraphVisualizer()
+
+        if self.config['generate_plantuml']:
+            print("\nGENERATING PLANTUML DIAGRAM...")
+            plantuml_code = visualizer.generate_plantuml_code(graph, self.config['package_name'])
+            visualizer.save_plantuml_file(plantuml_code, self.config['plantuml_output'])
+
+            print(f"To convert to SVG run:")
+            print(f"java -jar plantuml.jar {self.config['plantuml_output']}")
+            print("Download plantuml.jar from https://plantuml.com/ru/download")
+
+        if self.config['ascii_tree_mode']:
+            print("\nASCII DEPENDENCY TREE:")
+            print("=" * 50)
+            ascii_tree = visualizer.generate_ascii_tree(graph, self.config['package_name'])
+            print(ascii_tree)
+
+        visualizer.print_graph_comparison(graph, f"APK tools for {self.config['package_name']}")
+
     def build_dependency_graph(self) -> Dict[str, List[str]]:
         try:
             get_dependencies_func = self.get_dependencies_function()
@@ -238,8 +261,7 @@ class DependencyVisualizer:
             if graph:
                 builder.print_graph_statistics(graph)
 
-                if self.config['ascii_tree_mode']:
-                    builder.print_graph_structure(graph, self.config['package_name'])
+                self.visualize_graph(graph)
 
                 if self.config['show_load_order']:
                     self.analyze_load_order(graph)
@@ -258,7 +280,7 @@ class DependencyVisualizer:
     def run(self) -> None:
         try:
             config_path = sys.argv[1] if len(sys.argv) > 1 else 'config.xml'
-            print("Dependency Visualizer - Stage 4")
+            print("Dependency Visualizer - Stage 5")
             print("===============================")
 
             self.load_config(config_path)
@@ -266,7 +288,7 @@ class DependencyVisualizer:
 
             graph = self.build_dependency_graph()
 
-            print(f"Stage 4 completed successfully!")
+            print(f"Stage 5 completed successfully!")
             print(f"Package analyzed: {self.config['package_name']}")
             print(f"Graph size: {len(graph)} packages")
 
